@@ -2,7 +2,7 @@
 import * as cheerio from "cheerio";
 
 /**
- * GET /api/program?cinema=<atlas|svetozor|lucerna|aero>&date=YYYY-MM-DD
+ * GET /api/program?cinema=<atlas|svetozor|lucerna|aero|edison|ponrepo>&date=YYYY-MM-DD
  * Vrací: [{ title, shows: [{ time, hall }] }]
  */
 export default async function handler(req, res) {
@@ -19,6 +19,8 @@ export default async function handler(req, res) {
     else if (cinema === "svetozor") out = await safeScrapeSvetozor(date);
     else if (cinema === "lucerna") out = await safeScrapeLucerna(date);
     else if (cinema === "aero") out = await safeScrapeAero(date);
+    else if (cinema === "edison") out = await safeScrapeEdison(date);
+    else if (cinema === "ponrepo") out = await safeScrapePonrepo(date);
     else {
       res.status(501).json({ error: "toto kino zatím neumím" });
       return;
@@ -36,7 +38,7 @@ export default async function handler(req, res) {
   }
 }
 
-/* ----------------------- Atlas ----------------------- */
+/* ---------------------- Atlas ---------------------- */
 async function safeScrapeAtlas(dateISO) {
   try {
     const urls = [
@@ -70,7 +72,7 @@ async function safeScrapeAtlas(dateISO) {
   }
 }
 
-/* --------------------- Světozor ---------------------- */
+/* ---------------------- Světozor ---------------------- */
 async function safeScrapeSvetozor(dateISO) {
   try {
     const urls = [
@@ -211,7 +213,7 @@ async function safeScrapeLucerna(dateISO) {
   }
 }
 
-/* ------------------------ Aero ----------------------- */
+/* ---------------------- Aero ---------------------- */
 async function safeScrapeAero(dateISO) {
   try {
     const urls = [
@@ -226,7 +228,6 @@ async function safeScrapeAero(dateISO) {
     const $ = cheerio.load(html.text);
     const byTitle = new Map();
 
-    // A) data atributy
     $("[data-program-date][data-program-title]").each((_, el) => {
       const dt = $(el).attr("data-program-date");
       const title = clean($(el).attr("data-program-title"));
@@ -240,7 +241,6 @@ async function safeScrapeAero(dateISO) {
       pushShow(byTitle, title, { time, hall });
     });
 
-    // B) JSON-LD
     if (byTitle.size === 0) {
       $("script[type='application/ld+json']").each((_, el) => {
         const raw = $(el).contents().text();
@@ -253,7 +253,6 @@ async function safeScrapeAero(dateISO) {
       });
     }
 
-    // C) fallback HTML
     if (byTitle.size === 0) {
       $("time").each((_, t) => {
         const dtAttr = $(t).attr("datetime") || "";
@@ -281,6 +280,154 @@ async function safeScrapeAero(dateISO) {
     return { items: toItems(byTitle) };
   } catch (e) {
     return { error: "Aero: výjimka", detail: String(e), status: 500 };
+  }
+}
+
+/* ---------------------- Edison ---------------------- */
+async function safeScrapeEdison(dateISO) {
+  try {
+    const urls = [
+      "https://www.edisonfilmhub.cz/cz/program/",
+      "https://www.edisonfilmhub.cz/program/",
+      `https://www.edisonfilmhub.cz/cz/program/?date=${dateISO}`,
+      `https://www.edisonfilmhub.cz/program/?date=${dateISO}`
+    ];
+    const html = await fetchFirstHtml(urls);
+    if (!html.ok) return { error: "Edison: načtení selhalo", status: html.status, snippet: html.snippet };
+
+    const $ = cheerio.load(html.text);
+    const byTitle = new Map();
+
+    $("[data-program-date][data-program-title]").each((_, el) => {
+      const dt = $(el).attr("data-program-date");
+      const title = clean($(el).attr("data-program-title"));
+      if (!dt || !title) return;
+      if (!dt.startsWith(dateISO + " ")) return;
+
+      const time = hhmm(dt.slice(11, 16));
+      const hall =
+        clean($(el).attr("data-program-hall")) ||
+        clean($(el).find(".hall,.sál,.sal,.program-hall,.screen").first().text());
+      pushShow(byTitle, title, { time, hall });
+    });
+
+    if (byTitle.size === 0) {
+      $("script[type='application/ld+json']").each((_, el) => {
+        const raw = $(el).contents().text();
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          const arr = Array.isArray(data) ? data : [data];
+          for (const node of arr) collectEventsFromLd(node, dateISO, byTitle);
+        } catch {}
+      });
+    }
+
+    if (byTitle.size === 0) {
+      $("time").each((_, t) => {
+        const dtAttr = $(t).attr("datetime") || "";
+        const dateFromTime = dtAttr.slice(0, 10);
+        const timeText = dtAttr || $(t).text();
+        const time = extractHHMM(timeText);
+        if (!time) return;
+        if (dateFromTime && dateFromTime !== dateISO) return;
+
+        const box = $(t).closest("article,li,div,section").first();
+        const title =
+          clean(
+            box.find(".title,.film-title,h3,h2,a[href*='film']").first().text()
+          ) ||
+          clean(box.text()).split("\n").map(s => s.trim()).find(s => s.length > 3) ||
+          "";
+
+        if (!title) return;
+
+        const hall = clean(box.find(".hall,.sál,.sal,.screen,.program-hall").first().text());
+        pushShow(byTitle, title, { time: hhmm(time), hall });
+      });
+    }
+
+    return { items: toItems(byTitle) };
+  } catch (e) {
+    return { error: "Edison: výjimka", detail: String(e), status: 500 };
+  }
+}
+
+/* ---------------------- Ponrepo ---------------------- */
+async function safeScrapePonrepo(dateISO) {
+  try {
+    const urls = [
+      "https://nfa.cz/cz/kino-ponrepo/program/",
+      "https://nfa.cz/kino-ponrepo/program/",
+      `https://nfa.cz/cz/kino-ponrepo/program/?date=${dateISO}`,
+      `https://nfa.cz/kino-ponrepo/program/?date=${dateISO}`
+    ];
+    const html = await fetchFirstHtml(urls);
+    if (!html.ok) return { error: "Ponrepo: načtení selhalo", status: html.status, snippet: html.snippet };
+
+    const $ = cheerio.load(html.text);
+    const byTitle = new Map();
+
+    $("[data-program-date][data-program-title]").each((_, el) => {
+      const dt = $(el).attr("data-program-date");
+      const title = clean($(el).attr("data-program-title"));
+      if (!dt || !title) return;
+      if (!dt.startsWith(dateISO + " ")) return;
+
+      const time = hhmm(dt.slice(11, 16));
+      const hall =
+        clean($(el).attr("data-program-hall")) ||
+        clean($(el).find(".hall,.sal,.sál,.screen,.program-hall").first().text());
+      pushShow(byTitle, title, { time, hall });
+    });
+
+    if (byTitle.size === 0) {
+      $("script[type='application/ld+json']").each((_, el) => {
+        const raw = $(el).contents().text();
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          const arr = Array.isArray(data) ? data : [data];
+          for (const node of arr) collectEventsFromLd(node, dateISO, byTitle);
+        } catch {}
+      });
+    }
+
+    if (byTitle.size === 0) {
+      $("article, li, div").each((_, box) => {
+        const timeText =
+          $(box).find("time").first().attr("datetime") ||
+          $(box).find("time").first().text();
+        const time = extractHHMM(timeText);
+        if (!time) return;
+
+        const dateFromTime =
+          ($(box).find("time").first().attr("datetime") || "").slice(0, 10);
+        if (dateFromTime && dateFromTime !== dateISO) return;
+
+        const title =
+          clean(
+            $(box)
+              .find(".title,.film-title,h3,h2,a[href*='film'],a[href*='program']")
+              .first()
+              .text()
+          ) ||
+          clean($(box).find("header").first().text()) ||
+          "";
+
+        if (!title) return;
+
+        const hall = clean(
+          $(box).find(".hall,.sal,.sál,.screen,.program-hall").first().text()
+        );
+
+        pushShow(byTitle, title, { time: hhmm(time), hall });
+      });
+    }
+
+    return { items: toItems(byTitle) };
+  } catch (e) {
+    return { error: "Ponrepo: výjimka", detail: String(e), status: 500 };
   }
 }
 
