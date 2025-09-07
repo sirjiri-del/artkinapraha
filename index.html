@@ -87,7 +87,7 @@
       { id: "ponrepo",   name: "Ponrepo" },
       { id: "mat",       name: "Kino Mat" },
       { id: "lucerna",   name: "Kino Lucerna" },
-      { id: "kavalirka", name: "Kino Kavalírka" }
+      
     ];
 
     // 2) Demo pro kina bez napojení
@@ -105,7 +105,7 @@
       ponrepo:   d => `/api/program?cinema=ponrepo&date=${d}`,
       mat:       d => `/api/program?cinema=mat&date=${d}`,
       lucerna:   d => `/api/program?cinema=lucerna&date=${d}`,
-      kavalirka: d => `/api/program?cinema=kavalirka&date=${d}`
+     `
     };
 
     // 4) Pomocné funkce
@@ -181,7 +181,7 @@
 
     // 7) Jedno kino a den
     async function loadProgramForCinema(cinemaId, date) {
-  if (cinemaId === "atlas" || cinemaId === "svetozor"|| cinemaId === "lucerna"|| cinemaId === "aero"|| cinemaId === "edison" || cinemaId === "ponrepo" || cinemaId === "pilotu" ) {
+  if (cinemaId === "atlas" || cinemaId === "svetozor"|| cinemaId === "lucerna"|| cinemaId === "aero"|| || cinemaId === "mat" cinemaId === "edison" || cinemaId === "ponrepo" || cinemaId === "pilotu" ) {
     const r = await fetch(ENDPOINTS[cinemaId](date));
     if (!r.ok) {
       const t = await r.text();
@@ -308,6 +308,7 @@
   </script>
 </body>
 </html>
+
 
 
 
