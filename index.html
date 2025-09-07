@@ -148,8 +148,9 @@ function fmtLocalDate(d) {
       for (const c of selected) {
         for (let i = 0; i < days; i++) {
           const d = new Date(dateFrom);
-          d.setDate(d.getDate() + i);
-          const iso = d.toISOString().slice(0,10);
+d.setDate(d.getDate() + i);
+const iso = fmtLocalDate(d);               // SPRÁVNĚ, bez posunu
+
           try {
             const films = await loadProgramForCinema(c, iso);
             results.push({ cinema: c, date: iso, films });
@@ -180,4 +181,5 @@ function fmtLocalDate(d) {
   </script>
 </body>
 </html>
+
 
