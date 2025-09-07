@@ -2,7 +2,7 @@
 import * as cheerio from "cheerio";
 
 /**
- * /api/program?cinema=<atlas|svetozor>&date=YYYY-MM-DD
+ * GET /api/program?cinema=<atlas|svetozor>&date=YYYY-MM-DD
  * -> [{ title, shows: [{ time, hall }] }]
  */
 export default async function handler(req, res) {
@@ -15,9 +15,19 @@ export default async function handler(req, res) {
 
     let items = [];
     if (cinema === "atlas") {
-      items = await scrapeAtlas(date);
+      const r = await safeScrapeAtlas(date);
+      if (r.error) {
+        res.status(r.status || 502).json(r);
+        return;
+      }
+      items = r.items;
     } else if (cinema === "svetozor") {
-      items = await scrapeSvetozor(date);
+      const r = await safeScrapeSvetozor(date);
+      if (r.error) {
+        res.status(r.status || 502).json(r);
+        return;
+      }
+      items = r.items;
     } else {
       res.status(501).json({ error: "toto kino zatím neumím" });
       return;
@@ -26,140 +36,138 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
     res.status(200).json(items);
   } catch (e) {
+    // poslední záchrana – nikdy nesmí spadnout na HTML chybu
     res.status(500).json({ error: "server error", detail: String(e) });
   }
 }
 
 /* ----------------------- Atlas ----------------------- */
-async function scrapeAtlas(dateISO) {
-  const urls = [
-    "https://www.kinoatlaspraha.cz/program/",
-    "https://www.kinoatlas.cz/program/"
-  ];
-  const html = await fetchFirstHtml(urls);
-  if (!html.ok) throw new Error(`Atlas: ${html.status} ${html.snippet}`);
+async function safeScrapeAtlas(dateISO) {
+  try {
+    const urls = [
+      "https://www.kinoatlaspraha.cz/program/",
+      "https://www.kinoatlas.cz/program/",
+    ];
+    const html = await fetchFirstHtml(urls);
+    if (!html.ok) return { error: "Atlas: načtení selhalo", status: html.status, snippet: html.snippet };
 
-  const $ = cheerio.load(html.text);
-  const byTitle = new Map();
+    const $ = cheerio.load(html.text);
+    const byTitle = new Map();
 
-  $("div.line").each((_, el) => {
-    const dt = $(el).attr("data-program-date"); // 2025-09-07 13:00:00
-    const title = $(el).attr("data-program-title") || "";
-    if (!dt || !title) return;
-    if (!dt.startsWith(dateISO + " ")) return;
+    $("div.line").each((_, el) => {
+      const dt = $(el).attr("data-program-date");
+      const title = $(el).attr("data-program-title") || "";
+      if (!dt || !title) return;
+      if (!dt.startsWith(dateISO + " ")) return;
 
-    const time = dt.slice(11, 16);
-    const hall =
-      $(el).attr("data-program-hall") ||
-      $(el).find(".hall,.program-hall").first().text().trim() ||
-      "";
+      const time = dt.slice(11, 16);
+      const hall =
+        $(el).attr("data-program-hall") ||
+        $(el).find(".hall,.program-hall").first().text().trim() ||
+        "";
 
-    if (!byTitle.has(title)) byTitle.set(title, []);
-    byTitle.get(title).push({ time, hall });
-  });
+      if (!byTitle.has(title)) byTitle.set(title, []);
+      byTitle.get(title).push({ time, hall });
+    });
 
-  return toItems(byTitle);
+    return { items: toItems(byTitle) };
+  } catch (e) {
+    return { error: "Atlas: výjimka", detail: String(e), status: 500 };
+  }
 }
 
 /* --------------------- Světozor ---------------------- */
-async function scrapeSvetozor(dateISO) {
-  // několik možných URL, některé weby dovolují parametr date
-  const urls = [
-    "https://www.kinosvetozor.cz/cz/program/",
-    "https://www.kinosvetozor.cz/program/",
-    `https://www.kinosvetozor.cz/cz/program/?date=${dateISO}`,
-    `https://www.kinosvetozor.cz/program/?date=${dateISO}`
-  ];
-  const html = await fetchFirstHtml(urls);
-  if (!html.ok) throw new Error(`Světozor: ${html.status} ${html.snippet}`);
+async function safeScrapeSvetozor(dateISO) {
+  try {
+    const urls = [
+      "https://www.kinosvetozor.cz/cz/program/",
+      "https://www.kinosvetozor.cz/program/",
+      `https://www.kinosvetozor.cz/cz/program/?date=${dateISO}`,
+      `https://www.kinosvetozor.cz/program/?date=${dateISO}`,
+    ];
+    const html = await fetchFirstHtml(urls);
+    if (!html.ok) return { error: "Světozor: načtení selhalo", status: html.status, snippet: html.snippet };
 
-  const $ = cheerio.load(html.text);
-  const byTitle = new Map();
+    const $ = cheerio.load(html.text);
+    const byTitle = new Map();
 
-  /* A) data-program-* (nejčistší varianta) */
-  $("[data-program-date][data-program-title]").each((_, el) => {
-    const dt = $(el).attr("data-program-date");
-    const title = clean($(el).attr("data-program-title"));
-    if (!dt || !title) return;
-    if (!dt.startsWith(dateISO + " ")) return;
+    // A) data-program-* (nejčistší)
+    $("[data-program-date][data-program-title]").each((_, el) => {
+      const dt = $(el).attr("data-program-date");
+      const title = clean($(el).attr("data-program-title"));
+      if (!dt || !title) return;
+      if (!dt.startsWith(dateISO + " ")) return;
 
-    const time = toHHMM(dt.slice(11, 16));
-    const hall =
-      clean($(el).attr("data-program-hall")) ||
-      clean($(el).find(".hall,.sál,.sal,.program-hall,.screen").first().text());
-
-    if (!byTitle.has(title)) byTitle.set(title, []);
-    byTitle.get(title).push({ time, hall });
-  });
-
-  /* B) JSON-LD s eventy (často spolehlivé) */
-  if (byTitle.size === 0) {
-    $("script[type='application/ld+json']").each((_, el) => {
-      let jsonText = $(el).contents().text();
-      if (!jsonText) return;
-      try {
-        const data = JSON.parse(jsonText);
-        const list = Array.isArray(data) ? data : [data];
-        for (const node of list) {
-          collectEventsFromLd(node, dateISO, byTitle);
-        }
-      } catch {
-        // ignoruj nevalidní JSON-LD
-      }
+      const time = hhmm(dt.slice(11, 16));
+      const hall =
+        clean($(el).attr("data-program-hall")) ||
+        clean($(el).find(".hall,.sál,.sal,.program-hall,.screen").first().text());
+      pushShow(byTitle, title, { time, hall });
     });
+
+    // B) JSON-LD s eventy
+    if (byTitle.size === 0) {
+      $("script[type='application/ld+json']").each((_, el) => {
+        const raw = $(el).contents().text();
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          const arr = Array.isArray(data) ? data : [data];
+          for (const node of arr) collectEventsFromLd(node, dateISO, byTitle);
+        } catch { /* ignore nevalidní JSON */ }
+      });
+    }
+
+    // C) Fallback: vizuální HTML – <time> + název v okolí
+    if (byTitle.size === 0) {
+      $("time").each((_, t) => {
+        const dtAttr = $(t).attr("datetime") || "";
+        const dateFromTime = dtAttr.slice(0, 10);
+        const timeText = dtAttr || $(t).text();
+        const time = extractHHMM(timeText);
+        if (!time) return;
+        if (dateFromTime && dateFromTime !== dateISO) return;
+
+        const container = $(t).closest("article,li,div,section").first();
+        const title =
+          clean(
+            container
+              .find(".title,.film-title,h3,h2,a[href*='film'],a[href*='filmy']")
+              .first()
+              .text()
+          ) ||
+          clean(container.text()).split("\n").map(s => s.trim()).find(s => s.length > 3) ||
+          "";
+
+        if (!title) return;
+
+        const hall = clean(
+          container.find(".hall,.sál,.sal,.screen,.program-hall").first().text()
+        );
+        pushShow(byTitle, title, { time: hhmm(time), hall });
+      });
+    }
+
+    return { items: toItems(byTitle) };
+  } catch (e) {
+    return { error: "Světozor: výjimka", detail: String(e), status: 500 };
   }
-
-  /* C) Fallback: vizuální HTML – <time> + nejbližší název */
-  if (byTitle.size === 0) {
-    $("time").each((_, t) => {
-      const dtAttr = $(t).attr("datetime") || "";
-      const dateFromTime = dtAttr.slice(0, 10);
-      const timeText = dtAttr || $(t).text();
-      const time = extractHHMM(timeText);
-      if (!time) return;
-
-      if (dateFromTime && dateFromTime !== dateISO) return;
-
-      // blízký kontejner s titulkem
-      const container = $(t).closest("article,li,div,section").first();
-
-      // několik selektorů pro název
-      const title =
-        clean(
-          container
-            .find(".title,.film-title,h3,h2,a[href*='film'],a[href*='filmy']")
-            .first()
-            .text()
-        ) ||
-        // poslední záchrana – první delší řetězec v textu kontejneru
-        clean(container.text())
-          .split("\n")
-          .map(s => s.trim())
-          .find(s => s.length > 3) ||
-        "";
-
-      if (!title) return;
-
-      const hall = clean(
-        container.find(".hall,.sál,.sal,.screen,.program-hall").first().text()
-      );
-
-      if (!byTitle.has(title)) byTitle.set(title, []);
-      byTitle.get(title).push({ time: toHHMM(time), hall });
-    });
-  }
-
-  return toItems(byTitle);
 }
 
 /* -------------------- Pomocné věci ------------------- */
+function pushShow(map, title, show) {
+  if (!title || !show || !show.time) return;
+  if (!map.has(title)) map.set(title, []);
+  map.get(title).push(show);
+}
+
 function toItems(byTitle) {
   return [...byTitle.entries()]
     .map(([title, shows]) => ({
       title,
-      shows: shows
+      shows: (shows || [])
         .filter(s => s.time)
-        .sort((a, b) => a.time.localeCompare(b.time))
+        .sort((a, b) => a.time.localeCompare(b.time)),
     }))
     .filter(x => x.shows.length > 0)
     .sort((a, b) => a.title.localeCompare(b.title));
@@ -169,24 +177,28 @@ async function fetchFirstHtml(urls) {
   let lastStatus = 0;
   let lastText = "";
   for (const url of urls) {
-    const r = await fetch(url, {
-      method: "GET",
-      redirect: "follow",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
-        "Accept":
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Referer": url
+    try {
+      const r = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.8",
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache",
+          "Referer": url
+        }
+      });
+      lastStatus = r.status;
+      lastText = await r.text();
+      if (r.ok && lastText && lastText.includes("<html")) {
+        return { ok: true, status: r.status, text: lastText };
       }
-    });
-    lastStatus = r.status;
-    lastText = await r.text();
-    if (r.ok && lastText && lastText.includes("<html")) {
-      return { ok: true, status: r.status, text: lastText };
+    } catch (e) {
+      lastText = String(e);
+      lastStatus = 0;
     }
   }
   return { ok: false, status: lastStatus, snippet: (lastText || "").slice(0, 200) };
@@ -195,8 +207,10 @@ async function fetchFirstHtml(urls) {
 function collectEventsFromLd(node, dateISO, byTitle) {
   if (!node || typeof node !== "object") return;
 
-  // pokud je to rovnou Event
-  if ((node["@type"] === "Event" || node["@type"] === "Movie" || node["@type"] === "ScreeningEvent") && (node.startDate || node.startTime)) {
+  const types = new Set([node["@type"]].flat().filter(Boolean));
+  const isEvent = types.has("Event") || types.has("ScreeningEvent") || types.has("Movie");
+
+  if (isEvent && (node.startDate || node.startTime)) {
     const start = node.startDate || node.startTime || "";
     const d = String(start).slice(0, 10);
     if (d === dateISO) {
@@ -209,14 +223,10 @@ function collectEventsFromLd(node, dateISO, byTitle) {
         clean(node.location && (node.location.name || node.location.address)) ||
         clean(node.superEvent && node.superEvent.location && node.superEvent.location.name) ||
         "";
-      if (title && time) {
-        if (!byTitle.has(title)) byTitle.set(title, []);
-        byTitle.get(title).push({ time: toHHMM(time), hall });
-      }
+      pushShow(byTitle, title, { time: hhmm(time), hall });
     }
   }
 
-  // projdi vnořená pole a objekty
   for (const k of Object.keys(node)) {
     const v = node[k];
     if (Array.isArray(v)) v.forEach(x => collectEventsFromLd(x, dateISO, byTitle));
@@ -226,11 +236,11 @@ function collectEventsFromLd(node, dateISO, byTitle) {
 
 function extractHHMM(s) {
   if (!s) return null;
-  // ISO 2025-09-07T19:30:00+01:00 nebo jakýkoli text s hh:mm
   const m = String(s).match(/(\d{1,2}):(\d{2})/);
   if (!m) return null;
   const h = m[1].padStart(2, "0");
   return `${h}:${m[2]}`;
 }
 
-const clean
+const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+const hhmm = (s) => extractHHMM(s);
