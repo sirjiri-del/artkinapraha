@@ -21,6 +21,8 @@ export default async function handler(req, res) {
     else if (cinema === "aero") out = await safeScrapeAero(date);
     else if (cinema === "edison") out = await safeScrapeEdison(date);
     else if (cinema === "ponrepo") out = await safeScrapePonrepo(date);
+else if (cinema === "pilotu") out = await safeScrapePilotu(date);
+
     else {
       res.status(501).json({ error: "toto kino zatím neumím" });
       return;
@@ -69,6 +71,80 @@ async function safeScrapeAtlas(dateISO) {
     return { items: toItems(byTitle) };
   } catch (e) {
     return { error: "Atlas: výjimka", detail: String(e), status: 500 };
+  }
+}
+
+/* ---------------------- Kino Pilotů ---------------------- */
+async function safeScrapePilotu(dateISO) {
+  try {
+    const urls = [
+      "https://www.kinopilotu.cz/cz/program/",
+      "https://www.kinopilotu.cz/program/",
+      `https://www.kinopilotu.cz/cz/program/?date=${dateISO}`,
+      `https://www.kinopilotu.cz/program/?date=${dateISO}`
+    ];
+    const html = await fetchFirstHtml(urls);
+    if (!html.ok) {
+      return { error: "Pilotů: načtení selhalo", status: html.status, snippet: html.snippet };
+    }
+
+    const $ = cheerio.load(html.text);
+    const byTitle = new Map();
+
+    // A) data atributy pokud existují
+    $("[data-program-date][data-program-title]").each((_, el) => {
+      const dt = $(el).attr("data-program-date");
+      const title = clean($(el).attr("data-program-title"));
+      if (!dt || !title) return;
+      if (!dt.startsWith(dateISO + " ")) return;
+
+      const time = hhmm(dt.slice(11, 16));
+      const hall =
+        clean($(el).attr("data-program-hall")) ||
+        clean($(el).find(".hall,.sál,.sal,.program-hall,.screen").first().text());
+      pushShow(byTitle, title, { time, hall });
+    });
+
+    // B) JSON LD
+    if (byTitle.size === 0) {
+      $("script[type='application/ld+json']").each((_, el) => {
+        const raw = $(el).contents().text();
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          const arr = Array.isArray(data) ? data : [data];
+          for (const node of arr) collectEventsFromLd(node, dateISO, byTitle);
+        } catch {}
+      });
+    }
+
+    // C) Fallback z HTML
+    if (byTitle.size === 0) {
+      $("time").each((_, t) => {
+        const dtAttr = $(t).attr("datetime") || "";
+        const dateFromTime = dtAttr.slice(0, 10);
+        const timeText = dtAttr || $(t).text();
+        const time = extractHHMM(timeText);
+        if (!time) return;
+        if (dateFromTime && dateFromTime !== dateISO) return;
+
+        const box = $(t).closest("article,li,div,section").first();
+        const title =
+          clean(
+            box.find(".title,.film-title,h3,h2,a[href*='film'],a[href*='program']").first().text()
+          ) ||
+          clean(box.text()).split("\n").map(s => s.trim()).find(s => s.length > 3) ||
+          "";
+        if (!title) return;
+
+        const hall = clean(box.find(".hall,.sál,.sal,.screen,.program-hall").first().text());
+        pushShow(byTitle, title, { time: hhmm(time), hall });
+      });
+    }
+
+    return { items: toItems(byTitle) };
+  } catch (e) {
+    return { error: "Pilotů: výjimka", detail: String(e), status: 500 };
   }
 }
 
