@@ -1,10 +1,6 @@
-// api/program.js
+// Vercel serverless funkce: /api/program?cinema=atlas&date=YYYY-MM-DD
 import * as cheerio from "cheerio";
 
-/**
- * Použití: /api/program?cinema=atlas&date=YYYY-MM-DD
- * Výstup: [{ title, shows: [{ time, hall }] }]
- */
 export default async function handler(req, res) {
   try {
     const { cinema, date } = req.query || {};
@@ -13,11 +9,13 @@ export default async function handler(req, res) {
       return;
     }
 
+    // Zatím podporujeme jen Atlas, ostatní vrátí čitelnou chybu
     if (cinema !== "atlas") {
       res.status(501).json({ error: "zatím podporuji jen Atlas" });
       return;
     }
 
+    // stáhni HTML programu
     const r = await fetch("https://www.kinoatlaspraha.cz/program/", {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
@@ -25,13 +23,15 @@ export default async function handler(req, res) {
       res.status(502).json({ error: "nešlo načíst stránku kina" });
       return;
     }
+
     const html = await r.text();
     const $ = cheerio.load(html);
 
+    // vyparsuj řádky s projekcemi
     const byTitle = new Map();
 
     $("div.line").each((_, el) => {
-      const dt = $(el).attr("data-program-date");      // např. 2025-09-07 13:00:00
+      const dt = $(el).attr("data-program-date");          // 2025-09-07 13:00:00
       const title = $(el).attr("data-program-title") || "";
       if (!dt || !title) return;
 
@@ -40,7 +40,7 @@ export default async function handler(req, res) {
 
       const time = dt.slice(11, 16);
 
-      // pokus o sál z atributu nebo z vnořeného prvku
+      // pokusit se vytáhnout sál
       const hallAttr = $(el).attr("data-program-hall");
       const hallNode =
         $(el).find(".hall").text().trim() ||
@@ -55,7 +55,7 @@ export default async function handler(req, res) {
       .map(([title, shows]) => ({ title, shows }))
       .sort((a, b) => a.title.localeCompare(b.title));
 
-    // krátká keš na hraně
+    // krátká keš
     res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
     res.status(200).json(items);
   } catch (e) {

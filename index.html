@@ -10,4 +10,275 @@
     h1 { margin: 0 0 1rem 0 }
     .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin-bottom: .75rem }
     .cinemas { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .5rem; margin-bottom: .5rem }
-    .card { border:
+    .card { border: 1px solid #e5e7eb; border-radius: .75rem; padding: .9rem }
+    .results { display: grid; gap: .75rem }
+    .film { border: 1px solid #e5e7eb; border-radius: .75rem; padding: .9rem }
+    .film-title { font-weight: 700; margin-bottom: .35rem }
+    .show { display: flex; justify-content: space-between; padding: .3rem .4rem; border-bottom: 1px solid #f3f4f6 }
+    .show:last-child { border-bottom: 0 }
+    .muted { color: #666 }
+    .small { font-size: .9rem }
+    input[type="search"], input[type="date"], select, button { padding: .55rem .7rem }
+    button { cursor: pointer }
+    .error { color: #b00020 }
+    progress { width: 220px; height: 10px }
+  </style>
+</head>
+<body>
+  <h1>Program pražských art kin</h1>
+
+  <div class="card">
+    <div class="row">
+      <label><strong>Od data</strong></label>
+      <input id="dateFrom" type="date" />
+      <label><strong>Rozsah</strong></label>
+      <select id="range">
+        <option value="1">1 den</option>
+        <option value="7">7 dní</option>
+        <option value="14" selected>14 dní</option>
+      </select>
+      <label><strong>Hledat film</strong></label>
+      <input id="q" type="search" placeholder="název filmu" />
+      <label><strong>Řazení</strong></label>
+      <select id="sort">
+        <option value="az" selected>Název A až Z</option>
+        <option value="za">Název Z až A</option>
+      </select>
+      <button id="loadBtn">Načíst</button>
+      <span id="hint" class="muted small">Vyhledávání ignoruje diakritiku</span>
+    </div>
+
+    <div class="cinemas small muted">Vybraná kina</div>
+    <div id="cinemaList" class="cinemas"></div>
+
+    <div class="row small">
+      <span id="status" class="muted"></span>
+      <progress id="prog" value="0" max="100" style="display:none"></progress>
+    </div>
+  </div>
+
+  <div id="out" class="results" aria-live="polite"></div>
+
+  <script>
+    // 1 přehled kin
+    const CINEMAS = [
+      { id: "atlas",     name: "Kino Atlas" },
+      { id: "aero",      name: "Kino Aero" },
+      { id: "svetozor",  name: "Kino Světozor" },
+      { id: "oko",       name: "Bio Oko" },
+      { id: "edison",    name: "Edison Filmhub" },
+      { id: "pilotu",    name: "Kino Pilotů" },
+      { id: "ponrepo",   name: "Ponrepo" },
+      { id: "mat",       name: "Kino Mat" },
+      { id: "lucerna",   name: "Kino Lucerna" },
+      { id: "kavalirka", name: "Kino Kavalírka" }
+    ];
+
+    // 2 demo pro kina bez napojení
+    const USE_DEMO = true;
+
+    // 3 endpointy
+    const ENDPOINTS = {
+      atlas:     d => `/api/program?cinema=atlas&date=${d}`,
+      aero:      d => `/api/program?cinema=aero&date=${d}`,
+      svetozor:  d => `/api/program?cinema=svetozor&date=${d}`,
+      oko:       d => `/api/program?cinema=oko&date=${d}`,
+      edison:    d => `/api/program?cinema=edison&date=${d}`,
+      pilotu:    d => `/api/program?cinema=pilotu&date=${d}`,
+      ponrepo:   d => `/api/program?cinema=ponrepo&date=${d}`,
+      mat:       d => `/api/program?cinema=mat&date=${d}`,
+      lucerna:   d => `/api/program?cinema=lucerna&date=${d}`,
+      kavalirka: d => `/api/program?cinema=kavalirka&date=${d}`
+    };
+
+    // 4 pomocné funkce
+    const normalize = s => (s || "").toString().normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
+    const fmtDate = d => d.toISOString().slice(0,10);
+    const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+
+    // 5 demo generátor
+    function demoData(cinemaId, dateISO) {
+      const seed = Math.abs(hashCode(cinemaId + dateISO));
+      const titles = [
+        "Věčnost", "Tiché město", "Zimní krajina", "Dům na kopci",
+        "Stříbrné světlo", "Hranice noci", "Černý déšť", "Cesta domů",
+        "Zahrada", "Hlasy", "Podzimní řeka", "Písek a sklo"
+      ];
+      const halls = ["Sál 1", "Sál 2", "Velký sál", "Malý sál", "Studio"];
+      const items = [];
+      const filmCount = 2 + (seed % 4);
+      for (let i = 0; i < filmCount; i++) {
+        const shows = [];
+        const showCount = 2 + ((seed + i) % 3);
+        let h = 11 + ((seed + i) % 6);
+        for (let k = 0; k < showCount; k++) {
+          const time = String(h).padStart(2, "0") + ":" + (k % 2 ? "45" : "00");
+          const hall = halls[(seed + i + k) % halls.length];
+          shows.push({ time, hall, date: dateISO });
+          h += 2;
+        }
+        items.push({ title: titles[(seed + i) % titles.length], shows });
+      }
+      return Promise.resolve(items);
+    }
+
+    function hashCode(str) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) { h = ((h << 5) - h) + str.charCodeAt(i); h |= 0; }
+      return h;
+    }
+
+    // 6 UI prvky
+    const dateFrom = document.getElementById("dateFrom");
+    const rangeSel = document.getElementById("range");
+    const search = document.getElementById("q");
+    const sortSel = document.getElementById("sort");
+    const listEl = document.getElementById("cinemaList");
+    const btn = document.getElementById("loadBtn");
+    const out = document.getElementById("out");
+    const statusEl = document.getElementById("status");
+    const prog = document.getElementById("prog");
+
+    dateFrom.value = fmtDate(new Date());
+
+    // seznam kin s checkboxy
+    CINEMAS.forEach(c => {
+      const label = document.createElement("label");
+      label.className = "card";
+      label.style.display = "flex";
+      label.style.gap = ".5rem";
+      label.style.alignItems = "center";
+      label.innerHTML = `<input type="checkbox" checked data-id="${c.id}"><span>${c.name}</span>`;
+      listEl.appendChild(label);
+    });
+
+    // 7 načtení pro jedno kino a den
+    async function loadProgramForCinema(cinemaId, date) {
+      if (cinemaId === "atlas") {
+        try {
+          const r = await fetch(ENDPOINTS[cinemaId](date));
+          if (r.ok) return r.json();
+        } catch (e) {
+          console.warn("Atlas API selhalo, používám demo", e);
+        }
+      }
+      return demoData(cinemaId, date);
+    }
+
+    // 8 načti vše a seskup podle názvu
+    async function loadAll() {
+      try {
+        const startISO = dateFrom.value;
+        const days = parseInt(rangeSel.value, 10);
+        const selected = [...document.querySelectorAll('input[type="checkbox"][data-id]:checked')].map(x => x.getAttribute("data-id"));
+
+        if (!startISO) { out.innerHTML = `<div class="error">Není vyplněné datum</div>`; return; }
+        if (selected.length === 0) { out.innerHTML = `<div class="error">Vyber aspoň jedno kino</div>`; return; }
+
+        out.innerHTML = "";
+        statusEl.textContent = "Připravuji dotazy";
+        prog.style.display = "inline";
+        prog.value = 0;
+
+        const tasks = [];
+        for (let d = 0; d < days; d++) {
+          const dateISO = fmtDate(addDays(new Date(startISO), d));
+          for (const cid of selected) tasks.push({ cid, dateISO });
+        }
+
+        const total = tasks.length;
+        let done = 0;
+        const results = [];
+
+        for (const t of tasks) {
+          try {
+            const items = await loadProgramForCinema(t.cid, t.dateISO);
+            results.push({ cid: t.cid, dateISO: t.dateISO, items });
+          } catch (e) {
+            console.error("Chyba při načítání", t, e);
+            results.push({ cid: t.cid, dateISO: t.dateISO, items: [] });
+          }
+          done++;
+          statusEl.textContent = `Načteno ${done} z ${total}`;
+          prog.value = Math.round(100 * done / total);
+        }
+
+        const byTitle = new Map();
+        for (const { cid, dateISO, items } of results) {
+          const cinemaName = (CINEMAS.find(c => c.id === cid) || {}).name || cid;
+          for (const it of items) {
+            const key = normalize(it.title);
+            if (!byTitle.has(key)) byTitle.set(key, { title: it.title, shows: [] });
+            for (const s of it.shows || []) {
+              byTitle.get(key).shows.push({
+                date: s.date || dateISO,
+                time: s.time,
+                hall: s.hall || "",
+                cinema: cinemaName
+              });
+            }
+          }
+        }
+
+        prog.style.display = "none";
+        statusEl.textContent = `Nalezeno filmů ${byTitle.size}`;
+
+        const query = normalize(search.value);
+        let films = [...byTitle.values()];
+        if (query) films = films.filter(f => normalize(f.title).includes(query));
+
+        films.sort((a, b) => normalize(a.title).localeCompare(normalize(b.title)));
+        if (sortSel.value === "za") films.reverse();
+
+        renderFilms(films, startISO, days);
+      } catch (e) {
+        prog.style.display = "none";
+        out.innerHTML = `<div class="error">Chyba skriptu, otevři konzoli: ${e.message}</div>`;
+        console.error(e);
+      }
+    }
+
+    function renderFilms(films, startISO, days) {
+      out.innerHTML = "";
+      const head = document.createElement("div");
+      const endISO = fmtDate(addDays(new Date(startISO), days - 1));
+      head.className = "muted";
+      head.textContent = `Období ${startISO} až ${endISO}`;
+      out.appendChild(head);
+
+      if (films.length === 0) {
+        out.innerHTML += `<div class="error">Nic nenalezeno pro zadané filtry</div>`;
+        return;
+      }
+
+      for (const f of films) {
+        const box = document.createElement("div");
+        box.className = "film";
+        const title = document.createElement("div");
+        title.className = "film-title";
+        title.textContent = f.title;
+        box.appendChild(title);
+
+        f.shows.sort((a, b) => (a.date + " " + a.time).localeCompare(b.date + " " + b.time));
+
+        for (const s of f.shows) {
+          const row = document.createElement("div");
+          row.className = "show";
+          row.innerHTML = `<span class="muted small">${s.date} ${s.time} ${s.hall ? "(" + s.hall + ")" : ""}</span><span>${s.cinema}</span>`;
+          box.appendChild(row);
+        }
+
+        out.appendChild(box);
+      }
+    }
+
+    // ovládání
+    document.getElementById("loadBtn").addEventListener("click", loadAll);
+    document.getElementById("q").addEventListener("input", () => loadAll());
+    document.getElementById("sort").addEventListener("change", () => loadAll());
+
+    // první načtení
+    loadAll();
+  </script>
+</body>
+</html>
