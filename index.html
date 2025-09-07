@@ -83,6 +83,12 @@
       mat:       d => `/api/program?cinema=mat&date=${d}`,
       lucerna:   d => `/api/program?cinema=lucerna&date=${d}`
     };
+function fmtLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
     // Funkce pro načítání programu
     async function loadProgramForCinema(cinemaId, date) {
@@ -174,3 +180,4 @@
   </script>
 </body>
 </html>
+
