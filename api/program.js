@@ -2,8 +2,8 @@
 import * as cheerio from "cheerio";
 
 /**
- * GET /api/program?cinema=<atlas|svetozor>&date=YYYY-MM-DD
- * -> [{ title, shows: [{ time, hall }] }]
+ * GET /api/program?cinema=<atlas|svetozor|lucerna>&date=YYYY-MM-DD
+ * Vrací: [{ title, shows: [{ time, hall }] }]
  */
 export default async function handler(req, res) {
   try {
@@ -13,30 +13,27 @@ export default async function handler(req, res) {
       return;
     }
 
-    let items = [];
+    let out = { items: [] };
+
     if (cinema === "atlas") {
-      const r = await safeScrapeAtlas(date);
-      if (r.error) {
-        res.status(r.status || 502).json(r);
-        return;
-      }
-      items = r.items;
+      out = await safeScrapeAtlas(date);
     } else if (cinema === "svetozor") {
-      const r = await safeScrapeSvetozor(date);
-      if (r.error) {
-        res.status(r.status || 502).json(r);
-        return;
-      }
-      items = r.items;
+      out = await safeScrapeSvetozor(date);
+    } else if (cinema === "lucerna") {
+      out = await safeScrapeLucerna(date);
     } else {
       res.status(501).json({ error: "toto kino zatím neumím" });
       return;
     }
 
+    if (out.error) {
+      res.status(out.status || 502).json(out);
+      return;
+    }
+
     res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
-    res.status(200).json(items);
+    res.status(200).json(out.items);
   } catch (e) {
-    // poslední záchrana – nikdy nesmí spadnout na HTML chybu
     res.status(500).json({ error: "server error", detail: String(e) });
   }
 }
@@ -46,7 +43,7 @@ async function safeScrapeAtlas(dateISO) {
   try {
     const urls = [
       "https://www.kinoatlaspraha.cz/program/",
-      "https://www.kinoatlas.cz/program/",
+      "https://www.kinoatlas.cz/program/"
     ];
     const html = await fetchFirstHtml(urls);
     if (!html.ok) return { error: "Atlas: načtení selhalo", status: html.status, snippet: html.snippet };
@@ -66,8 +63,7 @@ async function safeScrapeAtlas(dateISO) {
         $(el).find(".hall,.program-hall").first().text().trim() ||
         "";
 
-      if (!byTitle.has(title)) byTitle.set(title, []);
-      byTitle.get(title).push({ time, hall });
+      pushShow(byTitle, title, { time, hall });
     });
 
     return { items: toItems(byTitle) };
@@ -83,7 +79,7 @@ async function safeScrapeSvetozor(dateISO) {
       "https://www.kinosvetozor.cz/cz/program/",
       "https://www.kinosvetozor.cz/program/",
       `https://www.kinosvetozor.cz/cz/program/?date=${dateISO}`,
-      `https://www.kinosvetozor.cz/program/?date=${dateISO}`,
+      `https://www.kinosvetozor.cz/program/?date=${dateISO}`
     ];
     const html = await fetchFirstHtml(urls);
     if (!html.ok) return { error: "Světozor: načtení selhalo", status: html.status, snippet: html.snippet };
@@ -91,7 +87,7 @@ async function safeScrapeSvetozor(dateISO) {
     const $ = cheerio.load(html.text);
     const byTitle = new Map();
 
-    // A) data-program-* (nejčistší)
+    // A) data atributy
     $("[data-program-date][data-program-title]").each((_, el) => {
       const dt = $(el).attr("data-program-date");
       const title = clean($(el).attr("data-program-title"));
@@ -105,7 +101,7 @@ async function safeScrapeSvetozor(dateISO) {
       pushShow(byTitle, title, { time, hall });
     });
 
-    // B) JSON-LD s eventy
+    // B) JSON-LD eventy
     if (byTitle.size === 0) {
       $("script[type='application/ld+json']").each((_, el) => {
         const raw = $(el).contents().text();
@@ -114,11 +110,11 @@ async function safeScrapeSvetozor(dateISO) {
           const data = JSON.parse(raw);
           const arr = Array.isArray(data) ? data : [data];
           for (const node of arr) collectEventsFromLd(node, dateISO, byTitle);
-        } catch { /* ignore nevalidní JSON */ }
+        } catch {}
       });
     }
 
-    // C) Fallback: vizuální HTML – <time> + název v okolí
+    // C) fallback z HTML
     if (byTitle.size === 0) {
       $("time").each((_, t) => {
         const dtAttr = $(t).attr("datetime") || "";
@@ -128,22 +124,17 @@ async function safeScrapeSvetozor(dateISO) {
         if (!time) return;
         if (dateFromTime && dateFromTime !== dateISO) return;
 
-        const container = $(t).closest("article,li,div,section").first();
+        const box = $(t).closest("article,li,div,section").first();
         const title =
           clean(
-            container
-              .find(".title,.film-title,h3,h2,a[href*='film'],a[href*='filmy']")
-              .first()
-              .text()
+            box.find(".title,.film-title,h3,h2,a[href*='film'],a[href*='filmy']").first().text()
           ) ||
-          clean(container.text()).split("\n").map(s => s.trim()).find(s => s.length > 3) ||
+          clean(box.text()).split("\n").map(s => s.trim()).find(s => s.length > 3) ||
           "";
 
         if (!title) return;
 
-        const hall = clean(
-          container.find(".hall,.sál,.sal,.screen,.program-hall").first().text()
-        );
+        const hall = clean(box.find(".hall,.sál,.sal,.screen,.program-hall").first().text());
         pushShow(byTitle, title, { time: hhmm(time), hall });
       });
     }
@@ -151,6 +142,82 @@ async function safeScrapeSvetozor(dateISO) {
     return { items: toItems(byTitle) };
   } catch (e) {
     return { error: "Světozor: výjimka", detail: String(e), status: 500 };
+  }
+}
+
+/* ---------------------- Lucerna ---------------------- */
+async function safeScrapeLucerna(dateISO) {
+  try {
+    // kandidátní adresy pro Lucernu
+    const urls = [
+      "https://www.kinolucerna.cz/cz/program/",
+      "https://www.kinolucerna.cz/program/",
+      `https://www.kinolucerna.cz/cz/program/?date=${dateISO}`,
+      `https://www.kinolucerna.cz/program/?date=${dateISO}`,
+      // případná alternativní doména
+      "https://www.lucerna.cz/cz/kino-lucerna/program/"
+    ];
+    const html = await fetchFirstHtml(urls);
+    if (!html.ok) return { error: "Lucerna: načtení selhalo", status: html.status, snippet: html.snippet };
+
+    const $ = cheerio.load(html.text);
+    const byTitle = new Map();
+
+    // A) data atributy
+    $("[data-program-date][data-program-title]").each((_, el) => {
+      const dt = $(el).attr("data-program-date");
+      const title = clean($(el).attr("data-program-title"));
+      if (!dt || !title) return;
+      if (!dt.startsWith(dateISO + " ")) return;
+
+      const time = hhmm(dt.slice(11, 16));
+      const hall =
+        clean($(el).attr("data-program-hall")) ||
+        clean($(el).find(".hall,.sál,.sal,.program-hall,.screen").first().text());
+      pushShow(byTitle, title, { time, hall });
+    });
+
+    // B) JSON-LD eventy
+    if (byTitle.size === 0) {
+      $("script[type='application/ld+json']").each((_, el) => {
+        const raw = $(el).contents().text();
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          const arr = Array.isArray(data) ? data : [data];
+          for (const node of arr) collectEventsFromLd(node, dateISO, byTitle);
+        } catch {}
+      });
+    }
+
+    // C) fallback z HTML
+    if (byTitle.size === 0) {
+      $("time").each((_, t) => {
+        const dtAttr = $(t).attr("datetime") || "";
+        const dateFromTime = dtAttr.slice(0, 10);
+        const timeText = dtAttr || $(t).text();
+        const time = extractHHMM(timeText);
+        if (!time) return;
+        if (dateFromTime && dateFromTime !== dateISO) return;
+
+        const box = $(t).closest("article,li,div,section").first();
+        const title =
+          clean(
+            box.find(".title,.film-title,h3,h2,a[href*='film'],a[href*='filmy']").first().text()
+          ) ||
+          clean(box.text()).split("\n").map(s => s.trim()).find(s => s.length > 3) ||
+          "";
+
+        if (!title) return;
+
+        const hall = clean(box.find(".hall,.sál,.sal,.screen,.program-hall").first().text());
+        pushShow(byTitle, title, { time: hhmm(time), hall });
+      });
+    }
+
+    return { items: toItems(byTitle) };
+  } catch (e) {
+    return { error: "Lucerna: výjimka", detail: String(e), status: 500 };
   }
 }
 
@@ -167,7 +234,7 @@ function toItems(byTitle) {
       title,
       shows: (shows || [])
         .filter(s => s.time)
-        .sort((a, b) => a.time.localeCompare(b.time)),
+        .sort((a, b) => a.time.localeCompare(b.time))
     }))
     .filter(x => x.shows.length > 0)
     .sort((a, b) => a.title.localeCompare(b.title));
