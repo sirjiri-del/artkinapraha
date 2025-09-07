@@ -172,7 +172,7 @@
 
     // 7) Jedno kino a den
     async function loadProgramForCinema(cinemaId, date) {
-  if (cinemaId === "atlas" || cinemaId === "svetozor"|| cinemaId === "lucerna") {
+  if (cinemaId === "atlas" || cinemaId === "svetozor"|| cinemaId === "lucerna"|| cinemaId === "aero" ) {
     const r = await fetch(ENDPOINTS[cinemaId](date));
     if (!r.ok) {
       const t = await r.text();
@@ -299,6 +299,7 @@
   </script>
 </body>
 </html>
+
 
 
 
