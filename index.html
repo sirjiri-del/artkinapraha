@@ -116,13 +116,13 @@
     // 5) Demo generátor
     function demoData(cinemaId, dateISO) {
       const seed = Math.abs(hashCode(cinemaId + dateISO));
-      const titles = ["Demo1","Demo2","Demo3","Demo4","Demo5"];
+      const titles = ["Není1","Není2"];
       const halls = ["Sál 1","Sál 2","Velký sál","Malý sál","Studio"];
       const items = [];
-      const filmCount = 2 + (seed % 4);
+      const filmCount = 2;
       for (let i = 0; i < filmCount; i++) {
         const shows = [];
-        const showCount = 2 + ((seed + i) % 3);
+        const showCount = 2 ;
         let h = 11 + ((seed + i) % 6);
         for (let k = 0; k < showCount; k++) {
           const time = String(h).padStart(2, "0") + ":" + (k % 2 ? "45" : "00");
@@ -308,6 +308,7 @@
   </script>
 </body>
 </html>
+
 
 
 
