@@ -22,6 +22,8 @@ export default async function handler(req, res) {
     else if (cinema === "edison") out = await safeScrapeEdison(date);
     else if (cinema === "ponrepo") out = await safeScrapePonrepo(date);
 else if (cinema === "pilotu") out = await safeScrapePilotu(date);
+  else if (cinema === "mat") out = await safeScrapeMat(date);
+
 
     else {
       res.status(501).json({ error: "toto kino zatím neumím" });
@@ -358,6 +360,82 @@ async function safeScrapeAero(dateISO) {
     return { error: "Aero: výjimka", detail: String(e), status: 500 };
   }
 }
+/* ---------------------- Kino Mat ---------------------- */
+async function safeScrapeMat(dateISO) {
+  try {
+    const urls = [
+      "https://www.mat.cz/program/",
+      "https://www.mat.cz/cz/program/",
+      "https://www.kinomat.cz/program/",
+      `https://www.mat.cz/program/?date=${dateISO}`,
+      `https://www.kinomat.cz/program/?date=${dateISO}`
+    ];
+    const html = await fetchFirstHtml(urls);
+    if (!html.ok) {
+      return { error: "Mat: načtení selhalo", status: html.status, snippet: html.snippet };
+    }
+
+    const $ = cheerio.load(html.text);
+    const byTitle = new Map();
+
+    // A) data atributy pokud existují
+    $("[data-program-date][data-program-title]").each((_, el) => {
+      const dt = $(el).attr("data-program-date");
+      const title = clean($(el).attr("data-program-title"));
+      if (!dt || !title) return;
+      if (!dt.startsWith(dateISO + " ")) return;
+
+      const time = hhmm(dt.slice(11, 16));
+      const hall =
+        clean($(el).attr("data-program-hall")) ||
+        clean($(el).find(".hall,.sál,.sal,.program-hall,.screen").first().text());
+      pushShow(byTitle, title, { time, hall });
+    });
+
+    // B) JSON LD s eventy
+    if (byTitle.size === 0) {
+      $("script[type='application/ld+json']").each((_, el) => {
+        const raw = $(el).contents().text();
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          const arr = Array.isArray(data) ? data : [data];
+          for (const node of arr) collectEventsFromLd(node, dateISO, byTitle);
+        } catch {}
+      });
+    }
+
+    // C) Fallback z HTML
+    if (byTitle.size === 0) {
+      $("time").each((_, t) => {
+        const dtAttr = $(t).attr("datetime") || "";
+        const dateFromTime = dtAttr.slice(0, 10);
+        const timeText = dtAttr || $(t).text();
+        const time = extractHHMM(timeText);
+        if (!time) return;
+        if (dateFromTime && dateFromTime !== dateISO) return;
+
+        const box = $(t).closest("article,li,div,section").first();
+
+        const title =
+          clean(
+            box.find(".title,.film-title,h3,h2,a[href*='film'],a[href*='program']").first().text()
+          ) ||
+          clean(box.text()).split("\n").map(s => s.trim()).find(s => s.length > 3) ||
+          "";
+
+        if (!title) return;
+
+        const hall = clean(box.find(".hall,.sál,.sal,.screen,.program-hall").first().text());
+        pushShow(byTitle, title, { time: hhmm(time), hall });
+      });
+    }
+
+    return { items: toItems(byTitle) };
+  } catch (e) {
+    return { error: "Mat: výjimka", detail: String(e), status: 500 };
+  }
+}
 
 /* ---------------------- Edison ---------------------- */
 async function safeScrapeEdison(dateISO) {
@@ -597,3 +675,4 @@ function extractHHMM(s) {
 
 const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
 const hhmm = (s) => extractHHMM(s);
+
