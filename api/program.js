@@ -79,12 +79,17 @@ async function safeScrapeAtlas(dateISO) {
 /* ---------------------- Kino Pilotů ---------------------- */
 async function safeScrapePilotu(dateISO) {
   try {
-    const urls = [
-      "https://www.kinopilotu.cz/cz/program/",
-      "https://www.kinopilotu.cz/program/",
-      `https://www.kinopilotu.cz/cz/program/?date=${dateISO}`,
-      `https://www.kinopilotu.cz/program/?date=${dateISO}`
-    ];
+  const urls = [
+  "https://www.kinopilotu.cz/cz/program/",
+  "https://www.kinopilotu.cz/program/",
+  "https://kinopilotu.cz/cz/program/",
+  "https://kinopilotu.cz/program/",
+  `https://www.kinopilotu.cz/cz/program/?date=${dateISO}`,
+  `https://www.kinopilotu.cz/program/?date=${dateISO}`,
+  `https://kinopilotu.cz/cz/program/?date=${dateISO}`,
+  `https://kinopilotu.cz/program/?date=${dateISO}`
+];
+
     const html = await fetchFirstHtml(urls);
     if (!html.ok) {
       return { error: "Pilotů: načtení selhalo", status: html.status, snippet: html.snippet };
@@ -675,4 +680,5 @@ function extractHHMM(s) {
 
 const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
 const hhmm = (s) => extractHHMM(s);
+
 
